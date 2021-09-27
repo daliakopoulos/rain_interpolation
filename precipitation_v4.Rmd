@@ -1,0 +1,525 @@
+---
+title: "Precipitation Mapping and Spatial Analysis using R"
+author: "Ioannis Daliakopoulos"
+date: "August, 2020"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+fig_caption: yes
+---
+
+```{r Options, echo=F}
+rm(list=ls()) #clear workspace
+knitr::opts_chunk$set(cache=TRUE, fig.width=12, fig.height=7,
+                      echo=T, warning=FALSE, message=FALSE)
+options(digits=3, warn=-1, width = 600)
+
+
+```
+
+```{r Libraries, echo=F, results="hide"}
+library(tidyverse)
+library(rgdal)
+
+library (raster)
+library(visreg)
+
+library(tmap)
+
+
+library(gstat) # Use gstat's idw routine
+library(sp)    # Used for the spsample function
+```
+
+
+```{r variograms}
+
+library(stringr)
+library(lattice)
+
+
+ 
+
+png("Figure_1.png",width=12,height=7,units="in",res=300)
+models <- c("Nug", "Exp", "Sph", "Gau", "Exc", "Mat", "Ste", "Cir", "Bes", "Pen", "Hol", "Log")
+model_names <- c("Nugget", "Exponential", "Spherical", "Gaussian", "Exponential class/stable", "Matern", "Matern, M. Stein's parameterization", "Circular", "bessel", "Pentaspherical", "Hole", "Logarithmic")
+
+
+show.vgms(models = models,   strip=strip.custom(bg="lightgrey", factor.levels=model_names), xlab="Distance", ylab="Semivariance")
+
+
+dev.off()
+
+
+```
+
+
+```{r read data}
+#Define data path
+path.data <- paste0(getwd(),"/data/")
+p.file <- paste(path.data, "precipitation.csv", sep="")
+
+# Read in semicolon csv file to dataframe
+p.df <- read.table(p.file, header = T, sep = ";", encoding="UTF-8")
+
+#head(p.df)
+
+
+```
+
+```{r goodness of fit evaluation}
+
+RSQ <- function (x, y) {
+  formatC(cor(x, y) ^ 2, digits = 3, format = "f")
+}
+
+RMSE = function(x, y){
+  formatC(sqrt(mean((x - y)^2)), digits = 2, format = "f")
+}
+
+FIT <- function (x, y, fig.name){
+  
+ cat ("RMSE: ", RMSE (x, y), "\n")
+ cat ("RSQ: ", RSQ (x, y), "\n")
+ 
+ 
+
+fit <- lm(y ~ x)
+
+print (summary(fit))
+
+fig <- visreg(fit, line=list(col="black"), points=list(size=3, pch=1), gg=TRUE) + 
+  coord_fixed(ratio = 1, xlim = c(200, 1400), ylim = c(200, 1400)) +
+  xlab("Observed Precipitation [mm]") + 
+  ylab("Modeled Precipitation [mm]") +
+  theme(axis.text.y = element_text(angle = 90, hjust = 1)) +
+  geom_abline(intercept = 0, slope = 1, linetype=2) +
+  theme_bw() +
+  theme(axis.text.y = element_text(angle = 90, hjust = 0.5)) 
+
+
+ggsave(fig.name, width = 12, height = 10, units = "cm")
+
+return(fig)
+
+}
+
+```
+
+
+```{r plot variogram}
+plot_variogram <- function(v, m, m1, fig.name) {
+  preds = variogramLine(m, maxdist = max(v$dist))
+  preds1 = variogramLine(m1, maxdist = max(v$dist))
+  
+fig <-  ggplot() + 
+    geom_point(data = v, aes(x = dist, y = gamma, size=np)) +
+    geom_line(data = preds, aes(x = dist, y = gamma))+
+  geom_line(linetype="dashed", data = preds1, aes(x = dist, y = gamma))+
+    
+  xlab("Distance [m]") + 
+  ylab("Semivariance") +
+  theme_bw() +
+  theme(axis.text.y = element_text(angle = 90, hjust = 0.5)) 
+  
+  
+  ggsave(fig.name, width = 12, height = 10, units = "cm")
+}
+
+
+```
+
+```{r show stations, fig.cap="Rain gauge locations at the Prefecture of Heraklion"}
+
+library(sf)
+library(elevatr)
+#Define path of GIS information
+path.gis <- paste0(getwd(),"/gis/")
+
+#Define Crete island shape file
+crete.file <- paste(path.gis, "Crete_EGSA.shp", sep="")
+crete.layer <- ogrListLayers(crete.file)
+crete.shp <- readOGR(dsn = crete.file, stringsAsFactors = F)
+
+#Define area of interest shape file
+heraklion.file <- paste(path.gis, "Heraklion_EGSA.shp", sep="")
+heraklion.layer <- ogrListLayers(heraklion.file)
+heraklion.shp <- readOGR(dsn = heraklion.file, stringsAsFactors = F)
+
+#DEM data from Amazon Web Services Terrian Tiles and the Open Topography global datasets API
+#Modify zoom level according to requirements
+dem <- get_elev_raster(heraklion.shp, z=9)
+dem_heraklion <- raster::mask(dem, heraklion.shp)
+dem_heraklion <- dem_heraklion - minValue(dem_heraklion)
+
+#
+crs_EGSA <- crs(heraklion.shp) 
+P.spdf = SpatialPointsDataFrame(p.df[,c("X","Y")], p.df, proj4string=crs_EGSA)
+
+#set bounding box
+bbox.sp <- st_bbox(c(xmin = 550000, xmax = 650000, ymax = 3930000, ymin = 3850000), proj4string=crs_EGSA)
+
+
+#Initialize plot
+fig.1 <- tm_shape(crete.shp, bbox = bbox.sp ) +
+  tm_grid(x = seq(550000, 650000, by=20000 ), y=seq(3870000, 3910000, by=20000 ), labels.rot = c(0, 90), col = "gray70") +
+   tm_polygons(col="#ffffff") +
+tm_shape(heraklion.shp, bbox = bbox.sp ) + tm_polygons() +
+  tm_shape(dem_heraklion) + tm_raster(n=10, palette = "Reds", auto.palette.mapping = FALSE,
+             title="Elevation [m]", legend.hist = TRUE) + 
+tm_shape(P.spdf) + tm_dots(col="P", palette = "Blues", auto.palette.mapping = FALSE,
+             title="Precipitation [mm]", size=0.7, legend.hist = TRUE) + tm_text("Name_EN", size = 0.3, just = "left", xmod = 0.25, ymod = 0.25) +
+    tm_layout(legend.outside = TRUE)
+
+fig.1
+
+tmap_save(fig.1, "Figure_2.png", width=1920, height=1080, asp=0)
+
+
+```
+```{r thiessen}
+# some ideas from https://mgimond.github.io/Spatial/interpolation-in-r.html
+
+library(spatstat)  # Used for the dirichlet tessellation function
+library(maptools)  # Used for conversion from SPDF to ppp
+library(raster)    # Used to clip out thiessen polygons
+library(rgeos)
+
+# Create a tessellated surface
+th  <-  as(dirichlet(ppp(P.spdf$X, P.spdf$Y,  c(550000, 650000), c(3850000, 3930000))), "SpatialPolygons")
+
+# The dirichlet function does not carry over projection information
+# requiring that this information be added manually
+proj4string(th) <- crs_EGSA
+
+# The tessellated surface does not store attribute information
+# from the point data layer. We'll use the over() function (from the sp
+# package) to join the point attributes to the tesselated surface via
+# a spatial join. The over() function creates a dataframe that will need to
+# be added to the "th" object thus creating a SpatialPolygonsDataFrame object
+
+th.z     <- over(th, P.spdf, fn=mean)
+th.spdf  <-  SpatialPolygonsDataFrame(th, th.z)
+
+
+
+# Finally, we'll clip the tessellated  surface to the Heraklion boundaries
+th.clp   <- raster::intersect(heraklion.shp,th.spdf)
+
+
+#Initialize plot
+fig.2 <- tm_shape(crete.shp, bbox = bbox.sp) +
+  tm_grid(x = seq(550000, 650000, by=20000 ), y=seq(3870000, 3910000, by=20000 ), labels.rot = c(0, 90), col = "gray70") +
+   tm_polygons(col="#ffffff") +
+tm_shape(heraklion.shp, bbox = bbox.sp) + tm_polygons() +
+tm_shape(th.clp) + tm_polygons(col="P", palette = "Blues", auto.palette.mapping = FALSE,
+             title="Precipitation [mm]", size=0.7, legend.hist = TRUE) + 
+  tm_shape(P.spdf) + tm_text("Name_EN", size = 0.3, just = "left", xmod = 0.25, ymod = 0.25)+
+    tm_layout(legend.outside = TRUE)
+
+fig.2 
+
+#tmap_save(fig.2, "Figure2.png", width=1920, height=1080, asp=0)
+
+```
+
+```{r idw}
+# some ideas from https://mgimond.github.io/Spatial/interpolation-in-r.html
+
+
+# Create an empty grid where n is the total number of cells
+grd              <- as.data.frame(spsample(th.clp, "regular", n=50000))
+names(grd)       <- c("X", "Y")
+coordinates(grd) <- c("X", "Y")
+gridded(grd)     <- TRUE  # Create SpatialPixel object
+fullgrid(grd)    <- TRUE  # Create SpatialGrid object
+
+
+# Add Ps projection information to the empty grid
+proj4string(grd) <- crs_EGSA
+
+# Interpolate the grid cells using a power value of 2 (idp=2.0)
+P.idw <- gstat::idw(P ~ 1, P.spdf, newdata=grd, idp=2.0)
+
+# Convert to raster object then clip to Heraklion
+r       <- raster(P.idw)
+r.m.1     <- raster::mask(r, heraklion.shp)
+
+ 
+ 
+ 
+
+# Plot
+fig.3 <- tm_shape(crete.shp, bbox = bbox.sp) +
+  tm_grid(x = seq(550000, 650000, by=20000 ), y=seq(3870000, 3910000, by=20000 ), labels.rot = c(0, 90), col = "gray70") +
+   tm_polygons(col="#ffffff") +
+tm_shape(heraklion.shp, bbox = bbox.sp) + tm_polygons() +
+tm_shape(r.m.1) + tm_raster(n=10, palette = "Blues", auto.palette.mapping = FALSE,
+             title="Precipitation [mm]", legend.hist = TRUE) + 
+  tm_shape(P.spdf) + tm_dots(size=0.2) + tm_text("Name_EN", size = 0.3, just = "left", xmod = 0.25, ymod = 0.25)+
+    tm_layout(legend.outside = TRUE)
+
+fig.3
+
+tmap_save(fig.3, "Figure_4.png", width=1920, height=1080, asp=0)
+
+summary(r.m.1)
+
+
+```
+
+```{r idw leave-one-out}
+
+P.df <- data.frame("P" = P.spdf$P,
+                   "X" = P.spdf$X,
+                   "Y" = P.spdf$Y,
+                   "Z" = P.spdf$Z)
+
+# Leave-one-out validation routine
+IDW.out <- vector(length = length(P.spdf))
+for (i in 1:length(P.spdf)) {
+  IDW.out[i] <- gstat::idw(P ~ 1, P.spdf[-i,], P.spdf[i,], idp=2.0)$var1.pred
+}
+
+FIT (P.df$P, IDW.out, "Figure_5a.png")
+
+
+
+```
+
+```{r first order fit including elevation}
+# Define the 1st order polynomial equation
+f.2 <- as.formula(P ~ X + Y + Z) 
+ 
+# Add X and Y to P
+
+P.df <- data.frame("P" = P.spdf$P,
+                   "X" = P.spdf$X,
+                   "Y" = P.spdf$Y,
+                   "Z" = P.spdf$Z)
+
+
+
+# Run the regression model
+lm.2 <- lm(data=P.spdf, f.2)
+
+dem_heraklion.df <- as.data.frame(dem_heraklion, xy=T)
+names(dem_heraklion.df)<- c("X","Y","Z")
+dem.grd <- as(dem_heraklion, "SpatialGrid")
+
+# Use the regression model output to interpolate the surface
+dat.1st <- SpatialGridDataFrame(dem.grd, data.frame(var1.pred = predict(lm.2, newdata=dem_heraklion.df))) 
+
+# Clip the interpolated raster to Heraklion
+r   <- raster(dat.1st)
+
+ 
+
+# Plot
+fig.5 <- tm_shape(crete.shp, bbox = bbox.sp) +
+  tm_grid(x = seq(550000, 650000, by=20000 ), y=seq(3870000, 3910000, by=20000 ), labels.rot = c(0, 90), col = "gray70") +
+   tm_polygons(col="#ffffff") +
+tm_shape(heraklion.shp, bbox = bbox.sp) + tm_polygons() +
+tm_shape(r) + tm_raster(n=10, palette = "Blues", auto.palette.mapping = FALSE,
+             title="Precipitation [mm]", legend.hist = TRUE) + 
+  tm_shape(P.spdf) + tm_dots(size=0.2) + tm_text("Name_EN", size = 0.3, just = "left", xmod = 0.25, ymod = 0.25)+
+    tm_layout(legend.outside = TRUE)
+
+fig.5
+
+tmap_save(fig.5, "Figure_7.png", width=1920, height=1080, asp=0)
+
+summary(r)
+
+
+
+```
+
+
+```{r first order leave-one-out DEM}
+
+P.df <- data.frame("P" = P.spdf$P,
+                   "X" = P.spdf$X,
+                   "Y" = P.spdf$Y,
+                   "Z" = P.spdf$Z)
+
+
+
+# Leave-one-out validation routine
+first.out <- vector(length = length(P.spdf))
+for (i in 1:length(P.df$P)) {
+  first.out[i] <- predict(lm(f.2, P.df[-i,]), P.df[i,])
+}
+
+
+
+# Compute RMSE
+FIT (P.df$P, first.out, "Figure_5b.png")
+
+
+```
+
+
+```{r universal  kriggin - fit variogram model}
+# some ideas from https://mgimond.github.io/Spatial/interpolation-in-r.html
+
+f.1 <- as.formula(P ~ X + Y) 
+
+# Compute the sample variogram; note that the f.1 trend model is one of the
+# parameters passed to variogram(). This tells the function to create the 
+# variogram on the de-trended data.
+var.smpl.1 <- variogram(f.1, data =  P.spdf)
+
+
+
+# Compute the variogram model by passing the nugget, sill and range values
+# to fit.variogram() via the vgm() function.
+dat.fit.1  <- fit.variogram(var.smpl.1, fit.method=2, vgm(c("Nug", "Exp", "Sph", "Gau", "Exc", "Mat", "Ste", "Cir", "Lin", "Bes", "Pen", "Per", "Wav", "Hol", "Log", "Spl", "Leg")))
+
+dat.fit.1a  <- fit.variogram(var.smpl.1, fit.method=7, vgm(c("Nug", "Exp", "Sph", "Gau", "Exc", "Mat", "Ste", "Cir", "Lin", "Bes", "Pen", "Per", "Wav", "Hol", "Log", "Spl", "Leg")))
+
+
+
+
+
+# The following plot allows us to assess the fit
+ plot(var.smpl.1, dat.fit.1)
+
+plot_variogram(var.smpl.1, dat.fit.1, dat.fit.1a, "Figure_3a.png")
+
+
+# Perform the krige interpolation (note the use of the variogram model
+# created in the earlier step)
+dat.krg.1 <- krige(f.1, newdata = grd, locations= P.spdf, model=dat.fit.1)
+
+# Convert kriged surface to a raster object for clipping
+r       <- raster(dat.krg.1)
+r.m.2     <- raster::mask(r, heraklion.shp)
+
+
+# Plot
+fig.7 <- tm_shape(crete.shp, bbox = bbox.sp) +
+  tm_grid(x = seq(550000, 650000, by=20000 ), y=seq(3870000, 3910000, by=20000 ), labels.rot = c(0, 90), col = "gray70") +
+   tm_polygons(col="#ffffff") +
+tm_shape(heraklion.shp, bbox = bbox.sp) + tm_polygons() +
+tm_shape(r.m.2) + tm_raster(n=10, palette = "Blues", auto.palette.mapping = FALSE,
+             title="Precipitation [mm]", legend.hist = TRUE) + 
+  tm_shape(P.spdf) + tm_dots(size=0.2) + tm_text("Name_EN", size = 0.3, just = "left", xmod = 0.25, ymod = 0.25) +
+    tm_layout(legend.outside = TRUE)
+
+fig.7
+
+tmap_save(fig.7, "Figure_6.png", width=1920, height=1080, asp=0)
+
+summary(r.m.2)
+
+
+
+```
+
+
+
+```{r krig leave-one-out TODO}
+
+OK.cv <- krige.cv(f.1, locations= P.spdf, model=dat.fit.1)
+
+
+
+# Compute RMSE
+FIT (OK.cv$observed, OK.cv$var1.pred, "Figure_5c.png")
+
+```
+
+```{r kriggin DEM - fit variogram model}
+f.2 <- as.formula(P ~ X + Y + Z) 
+
+# Compute the sample variogram; note that the f.1 trend model is one of the
+# parameters passed to variogram(). This tells the function to create the 
+# variogram on the de-trended data.
+var.smpl.2 <- variogram(f.2, data =  P.spdf)
+
+
+# Compute the variogram model by passing the nugget, sill and range values
+# to fit.variogram() via the vgm() function.
+  dat.fit.2  <- fit.variogram(var.smpl.2, fit.method=2, vgm(c("Nug", "Exp", "Sph", "Gau", "Exc", "Mat", "Ste", "Cir", "Lin", "Bes", "Pen", "Per", "Wav", "Hol", "Log", "Spl", "Leg")))
+  
+   dat.fit.2a  <- fit.variogram(var.smpl.2, fit.method=7, vgm(c("Nug", "Exp", "Sph", "Gau", "Exc", "Mat", "Ste", "Cir", "Lin", "Bes", "Pen", "Per", "Wav", "Hol", "Log", "Spl", "Leg")))
+
+  
+  ##    short                                   long
+## 1    Nug                              Nug (nugget)
+## 2    Exp                         Exp (exponential)
+## 3    Sph                           Sph (spherical)
+## 4    Gau                            Gau (gaussian)
+## 5    Exc        Exclass (Exponential class/stable)
+## 6    Mat                              Mat (Matern)
+## 7    Ste Mat (Matern, M. Stein's parameterization)
+## 8    Cir                            Cir (circular)
+## 9    Lin                              Lin (linear)
+## 10   Bes                              Bes (bessel)
+## 11   Pen                      Pen (pentaspherical)
+## 12   Per                            Per (periodic)
+## 13   Wav                                Wav (wave)
+## 14   Hol                                Hol (hole)
+## 15   Log                         Log (logarithmic)
+## 16   Pow                               Pow (power)
+## 17   Spl                              Spl (spline)
+## 18   Leg                            Leg (Legendre)
+## 19   Err                   Err (Measurement error)
+## 20   Int                           Int (Intercept)
+
+
+# The following plot allows us to assess the fit
+plot(var.smpl.2, dat.fit.2)
+
+plot_variogram(var.smpl.2, dat.fit.2, dat.fit.2a, "Figure_3b.png")
+
+
+# Perform the krige interpolation (note the use of the variogram model
+# created in the earlier step)
+
+coordinates(dem_heraklion.df) <- ~X+Y
+crs(dem_heraklion.df) <- crs_EGSA
+
+dat.krg.2 <- krige(f.2, newdata = dem_heraklion.df, locations= P.spdf, model=dat.fit.2)
+
+dat.krg.3 <- SpatialGridDataFrame(dem.grd, data.frame(dat.krg.2$var1.pred))
+
+
+# Convert kriged surface to a raster object for clipping
+r       <- raster(dat.krg.3)
+r.m.3     <- raster::mask(r, heraklion.shp)
+
+
+# Plot
+fig.9 <- tm_shape(crete.shp, bbox = bbox.sp) +
+  tm_grid(x = seq(550000, 650000, by=20000 ), y=seq(3870000, 3910000, by=20000 ), labels.rot = c(0, 90), col = "gray70") +
+   tm_polygons(col="#ffffff") +
+tm_shape(heraklion.shp, bbox = bbox.sp) + tm_polygons() +
+tm_shape(r.m.3) + tm_raster(n=10, palette = "Blues", auto.palette.mapping = FALSE,
+             title="Precipitation [mm]", legend.hist = TRUE) + 
+  tm_shape(P.spdf) + tm_dots(size=0.2) + tm_text("Name_EN", size = 0.3, just = "left", xmod = 0.25, ymod = 0.25) +
+    tm_layout(legend.outside = TRUE)
+
+fig.9 
+
+tmap_save(fig.9, "Figure_8.png", width=1920, height=1080, asp=0)
+
+summary(r.m.3)
+
+
+
+```
+
+
+```{r co-krig leave-one-out TODO}
+COK.cv <- krige.cv(f.2, locations= P.spdf, model=dat.fit.2)
+
+
+
+# Compute RMSE
+FIT (COK.cv$observed, COK.cv$var1.pred, "Figure_5d.png")
+
+
+```
